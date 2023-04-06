@@ -114,12 +114,12 @@ class Entry:
 # Class to track all data entries
 class Entries:
 
-	def __init__(self):
-		self.list = []
-		self.discard = True
+	def __init__(self, entries=[]):
+		self.list = entries
+		self.discard_flag = True
 
 	def add_new_speaker(self, speaker, data, paragraph=''):
-		self.discard = False
+		self.discard_flag = False
 		entry = Entry(data)
 		entry.participant(speaker)
 		if paragraph != '':
@@ -127,11 +127,11 @@ class Entries:
 		self.list.append(entry)
 	
 	def append_paragraph(self, paragraph):
-		if not self.discard:
+		if not self.discard_flag:
 			self.list[-1].append_text(paragraph)
 
 	def discard(self):
-		self.discard = True
+		self.discard_flag = True
 
 	def get(self):
 		return self.list
@@ -371,7 +371,8 @@ def potential_match_prompt(speaker, paragraph):
 
 # Helper function to check a phrase for a participant and return the participant
 # start_of_string is a flag to make the function only check the form <title>. <last-name>.
-def get_participant(paragraph, participants, document_id, possible_speakers, start_of_string=False):
+def get_participant(paragraph, participants, document_id, possible_speakers, invalid_speaker_strings, \
+		    start_of_string=False):
 
 	words = paragraph.split()
 	
@@ -379,9 +380,19 @@ def get_participant(paragraph, participants, document_id, possible_speakers, sta
 	last_name = ''
 	matches = []
 
-	# If not a statement
-	if len(words) <= 3 or (words[1][-1] != '.' and words[2][-1] != '.' and words[3][-1] != '.'):
-		return ('', -1) # Signal not a statement
+	# Make sure that the possible speaker phrase is valid
+	for string in invalid_speaker_strings:
+		if len(words) > 1 and words[0] == string[0] and words[1] == string[1]:
+			if len(string) > 2 and len(words) > 2:
+				if words[2] == string[2]:
+					return ()
+			else:
+				return ()
+
+	# If not a new statement
+	if len(words) <= 3 or not (words[1][-1] == '.' or words[2][-1] == '.' or \
+			(len(words) >= 5 and (words[3][-1] == '.' or words[4][-1] == '.') and words[2] == 'of')):
+		return () # Signal not a new statement
 
 	# Check for typical speaker string form (i.e. "Mr. Gosar. Statement...")
 	if start_of_string:
@@ -423,7 +434,9 @@ def get_participant(paragraph, participants, document_id, possible_speakers, sta
 			# Compare against all participants
 			for participant in participants:
 				if participant['ln'].casefold() == last_name.casefold() and \
-					participant['state'].casefold() == words[3].casefold():
+					(participant['state'].casefold() == words[3][:-1].casefold() or \
+      				participant['state'].casefold() == \
+						"{} {}".format(words[3], words[4][:-1]).casefold()):
 					matches.append(participant)
 
 		# If no matches found, check potential speakers file
@@ -432,7 +445,8 @@ def get_participant(paragraph, participants, document_id, possible_speakers, sta
 				if speaker['ln'].casefold() == last_name.casefold():
 					if potential_match_prompt(speaker, paragraph):
 						participants.append(speaker)
-						return (speaker, len(speaker['ln'].split())+1)
+						return (speaker, len(speaker['ln'].split())+1, participants, \
+	      					possible_speakers, invalid_speaker_strings)
 
 	# Other types of statements
 	else:
@@ -453,7 +467,8 @@ def get_participant(paragraph, participants, document_id, possible_speakers, sta
 					if speaker['ln'].split()[-1].casefold() == word.casefold():
 						if potential_match_prompt(speaker, paragraph):
 							participants.append(speaker)
-							return (speaker, len(words)-1)
+							return (speaker, len(words)-1, participants, possible_speakers, \
+	       							invalid_speaker_strings)
 
 	# Problems with recognizing speakers
 	if len(matches) == 0: # No matches found
@@ -481,11 +496,12 @@ def get_participant(paragraph, participants, document_id, possible_speakers, sta
 				match_len = len(speaker['ln'].split()) + 1
 			else:
 				match_len = len(words) - 1
-			return (speaker, match_len)
+			return (speaker, match_len, participants, possible_speakers, invalid_speaker_strings)
 		
 		# Not a new speaker, add phrase to invalid speaker strings
 		elif confirmation == 'n':
-			return ' '.join([words[0], words[1]])
+			invalid_speaker_strings.append([words[0], words[1]])
+			return (invalid_speaker_strings)
 			
 	elif len(matches) == 1: # One match found
 		speaker = matches[0]
@@ -493,7 +509,7 @@ def get_participant(paragraph, participants, document_id, possible_speakers, sta
 			match_len = len(speaker['ln'].split()) + 1
 		else:
 			match_len = len(words) - 1
-		return (speaker, match_len)
+		return (speaker, match_len, participants, possible_speakers, invalid_speaker_strings)
 				
 	else: # Multiple matches found
 		
@@ -516,44 +532,34 @@ def get_participant(paragraph, participants, document_id, possible_speakers, sta
 			match_len = len(speaker['ln'].split()) + 1
 		else:
 			match_len = len(words) - 1
-		return (speaker, match_len)
+		return (speaker, match_len, participants, possible_speakers, invalid_speaker_strings)
 
 
-# Processes a single paragraph and returns an updated data_entry
+# Processes a single paragraph and returns the updated entries
 def process_paragraph(paragraph, data, participants, chairperson, entries, possible_speakers, \
 		      invalid_speaker_strings):
-	new_speaker = False
+
+	entries = Entries(entries)
+
 	paragraph = paragraph.strip()
 	words = paragraph.split()
 
 	# Skip blank lines
 	if paragraph == '':
-		return entries
+		return (entries.get(), possible_speakers, invalid_speaker_strings)
 	
 	# Skip lines without uppercase letter
 	if paragraph[0].islower():
 		entries.append_paragraph(paragraph)
-		return entries
-	
-	# Make sure that the possible speaker phrase is valid
-	valid = True
-	for string in invalid_speaker_strings:
-		if len(words) > 1 and words[0] == string[0] and words[1] == string[1]:
-			if len(string) > 2 and len(words) > 2:
-				if words[2] == string[2]:
-					valid = False
-			else:
-				valid = False
+		return (entries.get(), possible_speakers, invalid_speaker_strings)
 
 	# Make a list of the possible other strings which indicate who is speaking
 	chair_ids = ['The Chairman.', 'The Chairwoman.', 'The Chairperson.', 'The Chair.']
-	alt_ids = ['The Clerk.']
+	alt_ids = ['The Clerk.', '[The information follows:]', 'Letter of', 'Letter from']
 
 	# Look for other chair ids
 	for id in chair_ids:
 		if paragraph[:len(id)].casefold() == id.casefold():
-
-			new_speaker = True
 
 			# If no chairperson detected
 			if chairperson == {}:
@@ -589,17 +595,16 @@ def process_paragraph(paragraph, data, participants, chairperson, entries, possi
 
 			# Dispose of following text
 			entries.discard()
-			new_speaker = True
 
 	append_paragraph = False
-	# If invalid statement
-	if not valid:
-		pass
+	participant_info = ()
 
 	# Look for statement
-	elif len(words) > 1 and (words[0].casefold() == 'statement'.casefold() or \
+	if len(words) > 1 and (words[0].casefold() == 'statement'.casefold() or \
 		words[1].casefold() == 'statement'.casefold()):
-		speaker = get_participant(paragraph, participants, data['id'], possible_speakers)
+		participant_info = get_participant(paragraph, participants, data['id'], possible_speakers, \
+				     invalid_speaker_strings)
+		
 		"""
 		matches = []
 		for i in range(2, len(words)):
@@ -676,177 +681,27 @@ def process_paragraph(paragraph, data, participants, chairperson, entries, possi
 
 	# Look for new speaker
 	else:
-		speaker = get_participant(paragraph, participants, data['id'], possible_speakers, True)
+		participant_info = get_participant(paragraph, participants, data['id'], possible_speakers, \
+				     invalid_speaker_strings, True)
 		append_paragraph = True	
 		
-		"""# Check for names
-		speaker = ''
-		matches = []
-		potential_match = False
-		match_len = 0
-
-		# One last name
-		if (len(words) > 1 and words[1][-1] == '.') or \
-			(len(words) > 2 and words[2][-2:] == '].' and words[2][0] == '['):
-			potential_match = True
-			match_len = 2
-			matches = []
-			if words[1][-1] == '.':
-				last_name = words[1][:-1]
-			else:
-				last_name = words[1]
-
-			# Compare against all participants
-			for participant in participants:
-				if participant['ln'].casefold() == last_name.casefold():
-					matches.append(participant)
-				if len(participant['ln'].split()) > 1 and \
-					participant['ln'].split()[-1].casefold() == last_name.casefold():
-					matches.append(participant)
-
-			# If no matches found, check potential speakers file
-			if len(matches) == 0:
-				for speaker in possible_speakers:
-					if speaker['ln'].casefold() == last_name.casefold():
-						print("Possible match found: {}".format(speaker))
-						print("for potential next speech: {}".format(paragraph[:200]))
-						confirmation = ''
-						while confirmation != 'y' and confirmation != 'n':
-							confirmation = input("Is this the correct speaker? (y/n) ")
-						if confirmation == 'y':
-							matches.append(speaker)
-							participants.append(speaker)
-							break
-
-		# Two last names
-		elif len(words) > 2 and words[2][-1] == '.':
-			potential_match = True
-			match_len = 3
-			matches = []
-			last_name = words[1] + ' ' + words[2][:-1]
-
-			# Compare against all participants
-			for participant in participants:
-				if participant['ln'].casefold() == last_name.casefold():
-					matches.append(participant)
-
-			# If no matches found, check just last word
-			for participant in participants:
-				if participant['ln'].casefold() == words[2][-1].casefold():
-					matches.append(participant)
-
-			# If no matches found, check potential speakers file
-			if len(matches) == 0:
-				for speaker in possible_speakers:
-					if speaker['ln'].casefold() == last_name.casefold():
-						print("Possible match found: {}".format(speaker))
-						print("for potential next speech: {}".format(paragraph))
-						confirmation = ''
-						while confirmation != 'y' and confirmation != 'n':
-							confirmation = input("Is this the correct speaker? (y/n) ")
-						if confirmation == 'y':
-							matches.append(speaker)
-							participants.append(speaker)
-							break
-
-			# <Last name> of <state>
-		elif len(words) > 3 and words[2] == 'of':
-			match_len = 4
-
-			# Check for state match
-			for state in states:
-				if words[3].casefold() == state['name'].casefold():
-					potential_match = True
-			matches = []
-			last_name = words[1]
-
-			# Compare against all participants
-			for participant in participants:
-				if participant['ln'].casefold() == last_name.casefold() and \
-					participant['state'].casefold() == words[3].casefold():
-					matches.append(participant)
-
-			# If no matches found, check potential speakers file
-			if len(matches) == 0:
-				for speaker in possible_speakers:
-					if speaker['ln'].casefold() == last_name.casefold() and \
-						speaker['state'].casefold() == words[3].casefold():
-						print("Possible match found: {}".format(speaker))
-						print("for potential next speech: {}".format(paragraph))
-						confirmation = ''
-						while confirmation != 'y' and confirmation != 'n':
-							confirmation = input("Is this the correct speaker? (y/n) ")
-						if confirmation == 'y':
-							matches.append(speaker)
-							participants.append(speaker)
-							break
-
-		# Problems with recognizing speakers
-		if valid and len(matches) == 0 and potential_match: # No matches found
-			
-			print()
-			print("WARNING: No match found for potential new speaker: {}".format(paragraph[:200]))
-			confirmation = ''
-			while confirmation != 'y' and confirmation != 'n':
-				confirmation = input("Is this actually a new speaker? (y/n) ")
-				
-			# New speaker found
-			if confirmation == 'y':
-				speaker = participant_prompt(participants, data['id'])
-				exists = False
-				
-				# Compare manual data against existing participants
-				for participant in participants:
-					if participant['name'] == speaker['name']:
-						exists = True
-				if not exists:
-					possible_speakers.append(speaker)
-					participants.append(speaker)
-				new_speaker = True
-			
-			# Not a new speaker, add phrase to invalid speaker strings
-			elif confirmation == 'n':
-				if match_len == 2:
-					invalid_speaker_strings.append([words[0], words[1]])
-				else:
-					invalid_speaker_strings.append([words[0], words[1], words[2]])
-					
-		elif len(matches) > 1: # Multiple matches found
-			
-			print()
-			print("WARNING: Multiple matches found for potential new speaker: {}".format(paragraph))
-			
-			# Print list of possible matches
-			i = 1
-			for match in matches:
-				print("{} - {}".format(i, match))
-				i += 1
-			
-			# Prompt user to select a match    
-			index = -1
-			while index < 0 or index >= len(matches):
-				index = input("Enter the number of the correct participant: ")
-				index = int(index)
-			speaker = matches[index - 1]
-			new_speaker = True
-			
-		elif len(matches) == 1: # One match found
-			speaker = matches[0]
-			new_speaker = True"""
-
 	# New speaker
-	if valid and type(speaker) is not str and speaker[1] != -1:
+	if len(participant_info) == 5:
 		if append_paragraph:
-			entries.add_new_speaker(speaker[0], data, ' '.join(words[speaker[1]:]))
+			entries.add_new_speaker(participant_info[0], data, ' '.join(words[participant_info[1]:]))
 		else:
-			entries.add_new_speaker(speaker[0], data)
+			entries.add_new_speaker(participant_info[0], data)
+
+			participants = participant_info[2]
+			possible_speakers = participant_info[3]
+			invalid_speaker_strings = participant_info[4]
 
 	# Add paragraph onto existing speaker
 	else:
 
 		# Invalid speaker phrase
-		if valid and speaker[0] is str:
-			invalid_speaker_strings.append(speaker)
+		if len(participant_info) == 1:
+			invalid_speaker_strings = participant_info[0]
 		
 		# Remove extraneous text
 		while True:
@@ -871,7 +726,7 @@ def process_paragraph(paragraph, data, participants, chairperson, entries, possi
 		if not paragraph.isupper():
 			entries.append_paragraph(paragraph)
 
-	return entries
+	return (entries.get(), possible_speakers, invalid_speaker_strings)
 
 
 # Given a single hearing, processes each line of the hearing and returns the list of entries
@@ -931,8 +786,8 @@ def process_hearing(content, data, participants, chairperson):
 			source = False
 
 		# Look for reports or other information
-		if "[The information follows:]" in paragraph:
-			report = True
+		# if "[The information follows:]" in paragraph:
+		# 	report = True
 		
 		# Detect end of report
 		if "______" in paragraph:
@@ -948,8 +803,8 @@ def process_hearing(content, data, participants, chairperson):
 			words = list(map(lambda x : x[:-1] if x[-1] == ',' else x, words))
 
 			# Look for Q&A inside the text
-			if len(words) > 1 and words[0] == "Questions" and \
-				words[1].casefold() == "Submitted".casefold():
+			if len(words) > 2 and (words[0] == "Questions" and \
+					words[1].casefold() == "Submitted".casefold()):
 				questions = True
 				if words.count("to") == 0 and words.count("by") == 0:
 					report = True
@@ -959,54 +814,19 @@ def process_hearing(content, data, participants, chairperson):
 					to_flag = False
 				
 				# Check for participants
-				matches = []
-				for participant in participants:
-					if ' ' not in participant['ln'] and participant['ln'] in words:
-						matches.append(participant)
-					elif ' ' in participant['ln'] and participant['ln'].split()[0] in words and \
-						participant['ln'].split()[1] in words:
-						matches.append(participant)
-				
-				# If no matches found
-				if len(matches) == 0:
-					print()
-					print("WARNING: Cannot detect participant in: {}".format(paragraph))
-					confirmation = ''
-					while confirmation != 'y' and confirmation != 'n':
-						confirmation = input("Is this the start of a Q&A? (y/n) ")
-					if confirmation == 'n':
-						questions = False
-						report = True
-					else:
-						temp = participant_prompt(participants, data['id'])
-						if to_flag:
-							questions_to = temp
-						else:
-							questions_from = temp
-				
-				# If one match found
-				elif len(matches) == 1:
+				participant_info = get_participant(paragraph, participants, data['id'], \
+				       							   possible_speakers, invalid_speaker_strings)
+				if len(participant_info) == 5:
 					if to_flag:
-						questions_to = matches[0]
+						questions_to = participant_info[0]
 					else:
-						questions_from = matches[0]
-				
-				# If multiple matches found
-				else:
-					print()
-					print("WARNING: Multiple matches found for participant: {}".format(paragraph))
-					i = 1
-					for match in matches:
-						print("{} - {}".format(i, match))
-						i += 1
-					index = -1
-					while index < 0 or index >= len(matches):
-						index = input("Enter the number of the correct participant: ")
-						index = int(index)
-					if to_flag:
-						questions_to = matches[index - 1]	
-					else:
-						questions_from = matches[index - 1]
+						questions_from = participant_info[0]
+
+					participants = participant_info[2]
+					possible_speakers = participant_info[3]
+					invalid_speaker_strings = participant_info[4]
+				elif len(participant_info) == 1:
+					invalid_speaker_strings
 
 			# Process Q&A
 			if questions:
@@ -1022,13 +842,41 @@ def process_hearing(content, data, participants, chairperson):
 				else:
 					entries.append_paragraph(paragraph)
 
+			# Process paragraph normally
 			else:
-				entries = process_paragraph(paragraph, data, participants, chairperson, entries, \
-				   	possible_speakers, invalid_speaker_strings)
+				paragraph_info = process_paragraph(paragraph, data, participants, chairperson, \
+						entries.get(), possible_speakers, invalid_speaker_strings)
+				entries = Entries(paragraph_info[0])
+				possible_speakers = paragraph_info[1]
+				invalid_speaker_strings = paragraph_info[2]
 			
 	# Look for Q&A in appendix
+	questions = False
+	questions_from = Entry().blank_participant()
+	questions_to = Entry().blank_participant()
 	for paragraph in appendix.split('\n'):
-		pass
+
+		# Detect questions
+		if paragraph.casefold().find("Question".casefold()) or \
+				paragraph.casefold().find("Submitted Questions".casefold()):
+			questions = True
+
+		# TODO: Set questions_from and questions_to
+
+		# Process questions
+		if questions:
+			# TODO: Include more possible question phrases
+			if len(words) > 0 and (words[0] == "Question." or \
+				(words[0] == "Question" and words[1][-1] == '.')):
+				if words[0] == "Question.":
+					prompt_len = 1
+				else:
+					prompt_len = 2
+				entries.add_new_speaker(questions_from, data, ' '.join(words[prompt_len:]))
+			elif len(words) > 0 and words[0] == "Answer.":
+				entries.add_new_speaker(questions_to, data, ' '.join(words[1:]))
+			else:
+				entries.append_paragraph(paragraph)
 
 	# Save all invalid speaker strings
 	with open('invalid-speaker-strings.txt', 'w') as invalid_file:
@@ -1178,8 +1026,9 @@ def main():
 	id5 = 'CHRG-117hhrg46928' # Features sources in text
 	id6 = 'CHRG-117hhrg44243' # Includes reports inside the text
 	id7 = 'CHRG-117hhrg44244' # Includes questions inside the text
+	id8 = 'CHRG-117hhrg46928' # Includes letter in text
 
-	process_documents([id7], 'hearing-data.csv')
+	process_documents([id8], 'hearing-data.csv')
 
 
 if __name__ == "__main__":
